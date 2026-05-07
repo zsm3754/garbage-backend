@@ -1,0 +1,10 @@
+path: ./dataset
+train: train
+val: val
+
+nc: 4
+names:
+  0: recyclable
+  1: kitchen
+  2: harmful
+  3: other
