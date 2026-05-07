@@ -1,10 +1,10 @@
 # 【仅填你的MySQL信息】
 DB_CONFIG = {
-    "host": "127.0.0.1",
+    "host": "rm-cn-szl4rue4m0001v.rwlb.rds.aliyuncs.com",  # 改：RDS 内网地址
     "port": 3306,
-    "user": "root",
-    "password": "zsm044688",
-    "database": "garbage_classification_db",
+    "user": "garbage_app",           # 改：RDS 账号（不是 root）
+    "password": "Zsm044688",         # 改：RDS 密码
+    "database": "garbage_classification_db",  # 检查这个数据库是否在RDS中存在
     "charset": "utf8mb4"
 }
 
