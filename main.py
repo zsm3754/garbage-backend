@@ -7,13 +7,17 @@ import random
 from datetime import date
 import config
 import models
-
+from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
+
 
 app = FastAPI(title="垃圾分类APP")
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+AVATAR_DIR = "avatars"
+os.makedirs(AVATAR_DIR, exist_ok=True)
+app.mount("/avatars", StaticFiles(directory=AVATAR_DIR), name="avatars")
 model = YOLO("runs/classify/train82/weights/best.pt")
 # ------------------------------
 # AI 识别函数
@@ -82,6 +86,14 @@ def register(user: UserRegister, db: Session = Depends(models.get_db)):
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+    # ========== 新增：自动创建 user_profiles ==========
+    new_profile = models.UserProfiles(
+        user_id=new_user.user_id,
+        total_points=0,
+        avatar_url=None
+    )
+    db.add(new_profile)
+    db.commit()
 
     return {"code": 200, "msg": "注册成功"}
 
@@ -329,15 +341,53 @@ def get_profile(user_id: int, db: Session = Depends(models.get_db)):
 def records(user_id: int, db: Session = Depends(models.get_db)):
     return {"code": 200, "data": db.query(models.DisposalRecords).filter_by(user_id=user_id).all()}
 
+
 @app.get("/api/fav/list/{user_id}")
 def favs(user_id: int, db: Session = Depends(models.get_db)):
-    return {"code": 200, "data": db.query(models.Favorites).filter_by(user_id=user_id).all()}
+    favorites = db.query(models.Favorites).filter(models.Favorites.user_id == user_id).all()
 
+    result = []
+    for fav in favorites:
+        if fav.item_type == 'article':
+            article = db.query(models.KnowledgeArticles).filter(
+                models.KnowledgeArticles.article_id == fav.item_id
+            ).first()
+            if article:
+                result.append({
+                    "favorite_id": fav.favorite_id,
+                    "user_id": fav.user_id,
+                    "item_id": fav.item_id,
+                    "item_type": fav.item_type,
+                    "title": article.title,
+                    "content": article.content,
+                    "category_id": article.category_id,
+                    "created_at": fav.created_at
+                })
+        elif fav.item_type == 'example':
+            example = db.query(models.GarbageExamples).filter(
+                models.GarbageExamples.example_id == fav.item_id
+            ).first()
+            if example:
+                result.append({
+                    "favorite_id": fav.favorite_id,
+                    "user_id": fav.user_id,
+                    "item_id": fav.item_id,
+                    "item_type": fav.item_type,
+                    "name": example.name,
+                    "tips": example.tips,
+                    "created_at": fav.created_at
+                })
+
+    return {"code": 200, "data": result}
 # ------------------------------
 # 文章推荐
 # ------------------------------
 @app.get("/api/article/recommend")
-def recommend_articles(category_id: int = None, count: int = 6, db: Session = Depends(models.get_db)):
+def recommend_articles(
+        category_id: int = None,
+        count: int = None,  # 改成 None，允许不传
+        db: Session = Depends(models.get_db)
+):
     try:
         query = db.query(models.KnowledgeArticles)
         if category_id:
@@ -346,11 +396,52 @@ def recommend_articles(category_id: int = None, count: int = 6, db: Session = De
         articles = query.order_by(models.KnowledgeArticles.created_at.desc()).all()
         if not category_id:
             random.shuffle(articles)
-        result = articles[:count]
-        return {"code": 200, "data": result}
+
+        # 如果 count 为 None，默认返回 6 条
+        take = count if count is not None else 6
+        result = articles[:take]
+
+        # 转换成字典格式
+        data = []
+        for article in result:
+            data.append({
+                "article_id": article.article_id,
+                "title": article.title,
+                "content": article.content,
+                "category_id": article.category_id,
+                "created_at": article.created_at.isoformat() if article.created_at else None
+            })
+
+        return {"code": 200, "data": data}
     except Exception as e:
         print(e)
         return {"code": 500, "msg": "获取推荐失败", "data": []}
+# ------------------------------
+# 获取单篇文章详情
+# ------------------------------
+@app.get("/api/article/{article_id}")
+def get_article(article_id: int, db: Session = Depends(models.get_db)):
+    """获取单篇文章的完整内容"""
+    article = db.query(models.KnowledgeArticles).filter(
+        models.KnowledgeArticles.article_id == article_id
+    ).first()
+
+    if not article:
+        return {"code": 404, "msg": "文章不存在", "data": None}
+
+    return {
+        "code": 200,
+        "data": {
+            "article_id": article.article_id,
+            "title": article.title,
+            "content": article.content,
+            "summary": getattr(article, 'summary', ''),
+            "category_id": article.category_id,
+            "created_at": article.created_at.isoformat() if article.created_at else None
+        }
+    }
+
+
 
 @app.get("/api/achievement/types")
 def achievements(db: Session = Depends(models.get_db)):
@@ -387,11 +478,7 @@ def update_username(data: UpdateUsername, db: Session = Depends(models.get_db)):
 # ------------------------------
 # 上传头像
 # ------------------------------
-AVATAR_DIR = "avatars"
-os.makedirs(AVATAR_DIR, exist_ok=True)
 
-from fastapi.staticfiles import StaticFiles
-app.mount("/avatars", StaticFiles(directory=AVATAR_DIR), name="avatars")
 
 @app.post("/api/user/upload/avatar")
 async def upload_avatar(
@@ -426,6 +513,54 @@ async def upload_avatar(
         "msg": "头像上传成功",
         "avatar_url": f"/avatars/{avatar_filename}"
     }
+
+
+# ------------------------------
+# 添加收藏
+# ------------------------------
+class FavoriteAdd(BaseModel):
+    user_id: int
+    item_id: int
+    item_type: str  # 'article' 或 'example'
+
+
+@app.post("/api/fav/add")
+def add_favorite(data: FavoriteAdd, db: Session = Depends(models.get_db)):
+    # 检查是否已收藏
+    exists = db.query(models.Favorites).filter(
+        models.Favorites.user_id == data.user_id,
+        models.Favorites.item_id == data.item_id,
+        models.Favorites.item_type == data.item_type
+    ).first()
+    if exists:
+        return {"code": 400, "msg": "已经收藏过了"}
+
+    new_fav = models.Favorites(
+        user_id=data.user_id,
+        item_id=data.item_id,
+        item_type=data.item_type
+    )
+    db.add(new_fav)
+    db.commit()
+    return {"code": 200, "msg": "收藏成功"}
+
+
+# ------------------------------
+# 取消收藏
+# ------------------------------
+@app.delete("/api/fav/remove")
+def remove_favorite(user_id: int, item_id: int, item_type: str, db: Session = Depends(models.get_db)):
+    fav = db.query(models.Favorites).filter(
+        models.Favorites.user_id == user_id,
+        models.Favorites.item_id == item_id,
+        models.Favorites.item_type == item_type
+    ).first()
+    if not fav:
+        raise HTTPException(404, "收藏记录不存在")
+
+    db.delete(fav)
+    db.commit()
+    return {"code": 200, "msg": "取消收藏成功"}
 
 # ------------------------------
 # 启动
